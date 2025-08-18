@@ -44,11 +44,19 @@ jobs:
         if: steps.gate.outputs.fire != 'true'
         run: echo "Skipping this tick."
 
-      - name: Curl Render App (status + time only)
+      - name: Ping Render (resilient)
         if: steps.gate.outputs.fire == 'true'
         run: |
-          curl -sS --fail \
-               -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115 Safari/537.36" \
-               -o /dev/null \
-               -w "HTTP %{http_code} in %{time_total}s\n" \
-               "https://dydx-client-web.onrender.com/?ts=$(date -u +%s)"
+          # Try 3 times with increasing timeout
+          for timeout in 15 30 60; do
+            if curl -sS --fail --max-time $timeout --retry 0 \
+                 -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115 Safari/537.36" \
+                 -o /dev/null \
+                 -w "HTTP %{http_code} in %{time_total}s (timeout: ${timeout}s)\n" \
+                 "https://dydx-client-web.onrender.com/?ts=$(date -u +%s)"; then
+              exit 0
+            fi
+          done
+          
+          echo "All attempts failed - continuing anyway"
+          exit 0
