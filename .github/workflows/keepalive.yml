@@ -1,19 +1,48 @@
-name: Keep Render Alive
+name: Keep Render Alive (jittered)
 
 on:
   schedule:
-    # Run at a "randomish" hour using cron + bash sleep
-    - cron: "0 * * * *"   # runs at top of every hour
-  workflow_dispatch:        # allow manual trigger
+    # UTC times: run every 3 minutes starting at :30 → :30, :33, :36, :39, :42, :45, :48
+    - cron: "30-48/3 * * * *"
+  workflow_dispatch:
 
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Random delay (0–1200s, up to 20 minutes)
-        run: sleep $(( RANDOM % 1200 ))
-
-      - name: Curl Render App
+      - name: Decide if this tick is the chosen one
+        id: gate
+        shell: bash
         run: |
-          curl -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115 Safari/537.36" \
-               -s "https://dydx-client-web.onrender.com/?ts=$(date +%s)"
+          # Current UTC hour (YYYYMMDDHH) as a key
+          key="$(date -u +%Y%m%d%H)"
+          # Produce a "random" index 0..6 for this hour
+          idx=$(( ( $(echo -n "$key" | sha256sum | cut -c1-8 | xargs printf "%d\n" 0x%s) ) % 7 ))
+          # Map indices 0..6 to our tick minutes
+          slots=(30 33 36 39 42 45 48)
+          chosen="${slots[$idx]}"
+          # Current minute (drop leading zero)
+          now_min="$(date -u +%M | sed 's/^0*//')"
+          now_min="${now_min:-0}"
+
+          echo "Chosen minute this hour: $chosen"
+          echo "Now minute: $now_min"
+
+          if [ "$now_min" = "$chosen" ]; then
+            echo "fire=true" >> $GITHUB_OUTPUT
+          else
+            echo "fire=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Exit if not the chosen tick
+        if: steps.gate.outputs.fire != 'true'
+        run: echo "Skipping this tick."
+
+      - name: Curl Render App (status + time only)
+        if: steps.gate.outputs.fire == 'true'
+        run: |
+          curl -sS --fail \
+               -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115 Safari/537.36" \
+               -o /dev/null \
+               -w "HTTP %{http_code} in %{time_total}s\n" \
+               "https://dydx-client-web.onrender.com/?ts=$(date -u +%s)"
