@@ -16,12 +16,18 @@ jobs:
         run: |
           # Current UTC hour (YYYYMMDDHH) as a key
           key="$(date -u +%Y%m%d%H)"
-          # Produce a "random" index 0..6 for this hour
-          idx=$(( ( $(echo -n "$key" | sha256sum | cut -c1-8 | xargs printf "%d\n" 0x%s) ) % 7 ))
+          # Hash the key → first 8 hex chars
+          hash=$(echo -n "$key" | sha256sum | cut -c1-8)
+          # Convert hex to integer (bash supports 16# notation)
+          num=$((16#$hash))
+          # Pick index 0..6
+          idx=$(( num % 7 ))
+
           # Map indices 0..6 to our tick minutes
           slots=(30 33 36 39 42 45 48)
           chosen="${slots[$idx]}"
-          # Current minute (drop leading zero)
+
+          # Current minute (remove leading zero)
           now_min="$(date -u +%M | sed 's/^0*//')"
           now_min="${now_min:-0}"
 
