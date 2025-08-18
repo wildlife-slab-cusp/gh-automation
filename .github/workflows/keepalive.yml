@@ -1,0 +1,19 @@
+name: Keep Render Alive
+
+on:
+  schedule:
+    # Run at a "randomish" hour using cron + bash sleep
+    - cron: "0 * * * *"   # runs at top of every hour
+  workflow_dispatch:        # allow manual trigger
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Random delay (0–1200s, up to 20 minutes)
+        run: sleep $(( RANDOM % 1200 ))
+
+      - name: Curl Render App
+        run: |
+          curl -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115 Safari/537.36" \
+               -s "https://dydx-client-web.onrender.com/?ts=$(date +%s)"
