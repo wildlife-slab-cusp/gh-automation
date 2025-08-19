@@ -44,19 +44,43 @@ jobs:
         if: steps.gate.outputs.fire != 'true'
         run: echo "Skipping this tick."
 
-      - name: Ping Render (resilient)
+      - name: Wake up Render service
         if: steps.gate.outputs.fire == 'true'
         run: |
-          # Try 3 times with increasing timeout
-          for timeout in 15 30 60; do
-            if curl -sS --fail --max-time $timeout --retry 0 \
-                 -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115 Safari/537.36" \
-                 -o /dev/null \
-                 -w "HTTP %{http_code} in %{time_total}s (timeout: ${timeout}s)\n" \
-                 "https://dydx-client-web.onrender.com/?ts=$(date -u +%s)"; then
-              exit 0
-            fi
-          done
+          echo "🚀 Attempting to wake Render service at $(date -u)"
           
-          echo "All attempts failed - continuing anyway"
+          # Try with exact mobile browser headers that worked for you
+          timeout=60  # Back to shorter timeout since it should be instant if it works
+          
+          echo "Making request with mobile browser headers..."
+          start_time=$(date +%s)
+          
+          response=$(curl -sS --max-time $timeout \
+               -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8" \
+               -H "Accept-Language: en-US,en;q=0.9" \
+               -H "Accept-Encoding: gzip, deflate, br" \
+               -H "DNT: 1" \
+               -H "Connection: keep-alive" \
+               -H "Upgrade-Insecure-Requests: 1" \
+               -A "Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36" \
+               -w "\nHTTP_CODE:%{http_code}\nTIME_TOTAL:%{time_total}" \
+               "https://dydx-client-web.onrender.com/" 2>&1)
+          
+          end_time=$(date +%s)
+          duration=$((end_time - start_time))
+          
+          echo "=== Results after ${duration}s ==="
+          echo "$response" | tail -5
+          
+          http_code=$(echo "$response" | grep "HTTP_CODE:" | cut -d: -f2)
+          time_total=$(echo "$response" | grep "TIME_TOTAL:" | cut -d: -f2)
+          
+          if [[ "$http_code" =~ ^[23] ]]; then
+            echo "✅ SUCCESS! Service responded with HTTP $http_code in ${time_total}s"
+            echo "🎉 This should now appear in your Render logs!"
+          else
+            echo "❌ Still not working: HTTP $http_code"
+            echo "Render may be blocking GitHub Actions IPs or detecting automation"
+          fi
+          
           exit 0
