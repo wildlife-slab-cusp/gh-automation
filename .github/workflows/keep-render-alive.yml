@@ -1,142 +1,46 @@
-name: Keep Render Alive (jittered)
+name: Keep Render Alive (stealth mode)
 
 on:
   schedule:
-    # UTC times: run 6 times per hour in 5-minute windows for pseudo-random 10-minute pings
-    - cron: "1-5,11-15,21-25,31-35,41-45,51-55 * * * *"
+    # Runs every 10 minutes
+    - cron: "*/10 * * * *"
   workflow_dispatch:
 
 jobs:
   ping:
     runs-on: ubuntu-latest
+    concurrency:
+      group: keep-render-alive
+      cancel-in-progress: true
+
     steps:
-      - name: Decide if this tick is the chosen one
-        id: gate
-        shell: bash
+      - name: Wake Render service
         run: |
-          # Current UTC time components
-          current_hour="$(date -u +%Y%m%d%H)"
-          current_min="$(date -u +%M | sed 's/^0*//')"
-          current_min="${current_min:-0}"
-          
-          # Determine which 10-minute window we're in and create appropriate key
-          if [ "$current_min" -ge 1 ] && [ "$current_min" -le 5 ]; then
-            window=0
-            window_slots=(1 2 3 4 5)
-          elif [ "$current_min" -ge 11 ] && [ "$current_min" -le 15 ]; then
-            window=1  
-            window_slots=(11 12 13 14 15)
-          elif [ "$current_min" -ge 21 ] && [ "$current_min" -le 25 ]; then
-            window=2
-            window_slots=(21 22 23 24 25)
-          elif [ "$current_min" -ge 31 ] && [ "$current_min" -le 35 ]; then
-            window=3
-            window_slots=(31 32 33 34 35)
-          elif [ "$current_min" -ge 41 ] && [ "$current_min" -le 45 ]; then
-            window=4
-            window_slots=(41 42 43 44 45)
-          elif [ "$current_min" -ge 51 ] && [ "$current_min" -le 55 ]; then
-            window=5
-            window_slots=(51 52 53 54 55)
-          else
-            echo "Not in a valid window, exiting"
-            exit 0
-          fi
-          
-          # Create key that changes every 10 minutes  
-          key="${current_hour}${window}"
-          
-          echo "Time key: $key (hour: $current_hour, window: $window, current_min: $current_min)"
-          # Hash the key → first 8 hex chars
-          hash=$(echo -n "$key" | sha256sum | cut -c1-8)
-          # Convert hex to integer (bash supports 16# notation)
-          num=$((16#$hash))
-          # Pick index 0..4 (5 possibilities per window)
-          idx=$(( num % 5 ))
-          
-          # Get the chosen minute from this window's slots
-          chosen="${window_slots[$idx]}"
+          echo "🚀 Pinging Render at $(date -u)"
 
-          echo "Window: $window, Available slots: ${window_slots[*]}"
-          echo "Hash index: $idx, Chosen minute: $chosen"
-          echo "Current minute: $current_min"
-
-          if [ "$current_min" = "$chosen" ]; then
-            echo "fire=true" >> $GITHUB_OUTPUT
-          else
-            echo "fire=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Exit if not the chosen tick
-        if: steps.gate.outputs.fire != 'true'
-        run: echo "Skipping this tick."
-
-      - name: Wake up Render service (exact browser pattern)
-        if: steps.gate.outputs.fire == 'true'
-        run: |
-          echo "🚀 Attempting to wake Render service at $(date -u)"
-          
-          timeout=60
           base_url="https://dydx-client-web.onrender.com"
-          
-          echo "Making exact browser request sequence (4 requests)..."
-          start_time=$(date +%s)
-          
-          # Request 1: Main page
-          echo "1. GET /"
-          response1=$(curl -sS --max-time $timeout \
-               -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8" \
+
+          # Rotate User-Agent strings
+          agents=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0 Safari/537.36"
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Safari/605.1.15"
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
+          )
+          ua=${agents[$RANDOM % ${#agents[@]}]}
+
+          # Randomized delay before request
+          sleep $((RANDOM % 5))
+
+          echo "1. GET / (homepage)"
+          curl -sS --max-time 60 \
+               -H "Accept: text/html,application/xhtml+xml" \
                -H "Accept-Language: en-US,en;q=0.9" \
-               -H "Accept-Encoding: gzip, deflate, br" \
-               -H "DNT: 1" \
-               -H "Connection: keep-alive" \
-               -H "Upgrade-Insecure-Requests: 1" \
-               -A "Mozilla/5.0 (Linux; Android 10; SM-T865) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Safari/537.36" \
-               -w "HTTP_%{http_code}" \
-               "$base_url/" 2>&1)
-          
-          sleep 0.5  # Small delay between requests
-          
-          # Request 2: First favicon
-          echo "2. GET /favicon.ico (first)"
-          curl -sS --max-time 30 \
-               -H "Accept: image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8" \
-               -H "Accept-Language: en-US,en;q=0.9" \
-               -A "Mozilla/5.0 (Linux; Android 10; SM-T865) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Safari/537.36" \
-               "$base_url/favicon.ico" -o /dev/null 2>&1
-          
-          sleep 0.5
-          
-          # Request 3: Apple touch icon  
-          echo "3. GET /apple-touch-icon.png"
-          curl -sS --max-time 30 \
-               -H "Accept: image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8" \
-               -H "Accept-Language: en-US,en;q=0.9" \
-               -A "Mozilla/5.0 (Linux; Android 10; SM-T865) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Safari/537.36" \
-               "$base_url/apple-touch-icon.png" -o /dev/null 2>&1
-          
-          sleep 0.5
-          
-          # Request 4: Second favicon (duplicate like browser)
-          echo "4. GET /favicon.ico (second)"
-          curl -sS --max-time 30 \
-               -H "Accept: image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8" \
-               -H "Accept-Language: en-US,en;q=0.9" \
-               -A "Mozilla/5.0 (Linux; Android 10; SM-T865) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Safari/537.36" \
-               "$base_url/favicon.ico" -o /dev/null 2>&1
-          
-          end_time=$(date +%s)
-          duration=$((end_time - start_time))
-          
-          echo "=== Sequence completed in ${duration}s ==="
-          
-          main_code=$(echo "$response1" | grep -o "HTTP_[0-9]*" | cut -d_ -f2)
-          
-          if [[ "$main_code" =~ ^[23] ]]; then
-            echo "✅ SUCCESS! Main page: HTTP $main_code"
-            echo "🎉 Made 4 requests just like your browser - check Render logs!"
-          else
-            echo "❌ Main page failed: HTTP $main_code"
-          fi
-          
-          exit 0
+               -H "Sec-Fetch-Site: none" \
+               -H "Sec-Fetch-Mode: navigate" \
+               -H "Sec-Fetch-User: ?1" \
+               -H "Sec-Fetch-Dest: document" \
+               -H "Referer: https://google.com/" \
+               -A "$ua" \
+               "$base_url/" -o /dev/null
+
+          echo "✅ Stealth ping completed."
