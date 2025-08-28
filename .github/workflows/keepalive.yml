@@ -2,8 +2,8 @@ name: Keep Render Alive (jittered)
 
 on:
   schedule:
-    # UTC times: run every 3 minutes starting at :30 → :30, :33, :36, :39, :42, :45, :48
-    - cron: "30-48/3 * * * *"
+    # UTC times: run 6 times per hour in 5-minute windows for pseudo-random 10-minute pings
+    - cron: "1-5,11-15,21-25,31-35,41-45,51-55 * * * *"
   workflow_dispatch:
 
 jobs:
@@ -14,27 +14,35 @@ jobs:
         id: gate
         shell: bash
         run: |
-          # Current UTC hour (YYYYMMDDHH) as a key
-          key="$(date -u +%Y%m%d%H)"
+          # Current UTC time for 10-minute windows (YYYYMMDDHHMM div 10)
+          current_hour="$(date -u +%Y%m%d%H)"
+          current_min="$(date -u +%M | sed 's/^0*//')"
+          current_min="${current_min:-0}"
+          
+          # Determine which 10-minute window we're in (0-5)
+          window=$(( current_min / 10 ))
+          
+          # Create key that changes every 10 minutes
+          key="${current_hour}${window}"
+          
+          echo "Time key: $key (hour: $current_hour, window: $window)"
           # Hash the key → first 8 hex chars
           hash=$(echo -n "$key" | sha256sum | cut -c1-8)
           # Convert hex to integer (bash supports 16# notation)
           num=$((16#$hash))
-          # Pick index 0..6
-          idx=$(( num % 7 ))
+          # Pick index 0..4 (5 possibilities per window)
+          idx=$(( num % 5 ))
 
-          # Map indices 0..6 to our tick minutes
-          slots=(30 33 36 39 42 45 48)
-          chosen="${slots[$idx]}"
+          # Map current minute to window base, then add index
+          window_bases=(0 10 20 30 40 50)  # Start of each 10-min window
+          base=${window_bases[$window]}
+          chosen=$(( base + idx + 1 ))  # +1 because windows start at x1, not x0
 
-          # Current minute (remove leading zero)
-          now_min="$(date -u +%M | sed 's/^0*//')"
-          now_min="${now_min:-0}"
+          echo "Window: $window, Base: $base, Index: $idx"
+          echo "Chosen minute this window: $chosen"
+          echo "Current minute: $current_min"
 
-          echo "Chosen minute this hour: $chosen"
-          echo "Now minute: $now_min"
-
-          if [ "$now_min" = "$chosen" ]; then
+          if [ "$current_min" = "$chosen" ]; then
             echo "fire=true" >> $GITHUB_OUTPUT
           else
             echo "fire=false" >> $GITHUB_OUTPUT
@@ -44,43 +52,72 @@ jobs:
         if: steps.gate.outputs.fire != 'true'
         run: echo "Skipping this tick."
 
-      - name: Wake up Render service
+      - name: Wake up Render service (exact browser pattern)
         if: steps.gate.outputs.fire == 'true'
         run: |
           echo "🚀 Attempting to wake Render service at $(date -u)"
           
-          # Try with exact mobile browser headers that worked for you
-          timeout=60  # Back to shorter timeout since it should be instant if it works
+          timeout=60
+          base_url="https://dydx-client-web.onrender.com"
           
-          echo "Making request with mobile browser headers..."
+          echo "Making exact browser request sequence (4 requests)..."
           start_time=$(date +%s)
           
-          response=$(curl -sS --max-time $timeout \
+          # Request 1: Main page
+          echo "1. GET /"
+          response1=$(curl -sS --max-time $timeout \
                -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8" \
                -H "Accept-Language: en-US,en;q=0.9" \
                -H "Accept-Encoding: gzip, deflate, br" \
                -H "DNT: 1" \
                -H "Connection: keep-alive" \
                -H "Upgrade-Insecure-Requests: 1" \
-               -A "Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36" \
-               -w "\nHTTP_CODE:%{http_code}\nTIME_TOTAL:%{time_total}" \
-               "https://dydx-client-web.onrender.com/" 2>&1)
+               -A "Mozilla/5.0 (Linux; Android 10; SM-T865) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Safari/537.36" \
+               -w "HTTP_%{http_code}" \
+               "$base_url/" 2>&1)
+          
+          sleep 0.5  # Small delay between requests
+          
+          # Request 2: First favicon
+          echo "2. GET /favicon.ico (first)"
+          curl -sS --max-time 30 \
+               -H "Accept: image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8" \
+               -H "Accept-Language: en-US,en;q=0.9" \
+               -A "Mozilla/5.0 (Linux; Android 10; SM-T865) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Safari/537.36" \
+               "$base_url/favicon.ico" -o /dev/null 2>&1
+          
+          sleep 0.5
+          
+          # Request 3: Apple touch icon  
+          echo "3. GET /apple-touch-icon.png"
+          curl -sS --max-time 30 \
+               -H "Accept: image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8" \
+               -H "Accept-Language: en-US,en;q=0.9" \
+               -A "Mozilla/5.0 (Linux; Android 10; SM-T865) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Safari/537.36" \
+               "$base_url/apple-touch-icon.png" -o /dev/null 2>&1
+          
+          sleep 0.5
+          
+          # Request 4: Second favicon (duplicate like browser)
+          echo "4. GET /favicon.ico (second)"
+          curl -sS --max-time 30 \
+               -H "Accept: image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8" \
+               -H "Accept-Language: en-US,en;q=0.9" \
+               -A "Mozilla/5.0 (Linux; Android 10; SM-T865) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Safari/537.36" \
+               "$base_url/favicon.ico" -o /dev/null 2>&1
           
           end_time=$(date +%s)
           duration=$((end_time - start_time))
           
-          echo "=== Results after ${duration}s ==="
-          echo "$response" | tail -5
+          echo "=== Sequence completed in ${duration}s ==="
           
-          http_code=$(echo "$response" | grep "HTTP_CODE:" | cut -d: -f2)
-          time_total=$(echo "$response" | grep "TIME_TOTAL:" | cut -d: -f2)
+          main_code=$(echo "$response1" | grep -o "HTTP_[0-9]*" | cut -d_ -f2)
           
-          if [[ "$http_code" =~ ^[23] ]]; then
-            echo "✅ SUCCESS! Service responded with HTTP $http_code in ${time_total}s"
-            echo "🎉 This should now appear in your Render logs!"
+          if [[ "$main_code" =~ ^[23] ]]; then
+            echo "✅ SUCCESS! Main page: HTTP $main_code"
+            echo "🎉 Made 4 requests just like your browser - check Render logs!"
           else
-            echo "❌ Still not working: HTTP $http_code"
-            echo "Render may be blocking GitHub Actions IPs or detecting automation"
+            echo "❌ Main page failed: HTTP $main_code"
           fi
           
           exit 0
