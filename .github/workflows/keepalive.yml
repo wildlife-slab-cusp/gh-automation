@@ -14,32 +14,51 @@ jobs:
         id: gate
         shell: bash
         run: |
-          # Current UTC time for 10-minute windows (YYYYMMDDHHMM div 10)
+          # Current UTC time components
           current_hour="$(date -u +%Y%m%d%H)"
           current_min="$(date -u +%M | sed 's/^0*//')"
           current_min="${current_min:-0}"
           
-          # Determine which 10-minute window we're in (0-5)
-          window=$(( current_min / 10 ))
+          # Determine which 10-minute window we're in and create appropriate key
+          if [ "$current_min" -ge 1 ] && [ "$current_min" -le 5 ]; then
+            window=0
+            window_slots=(1 2 3 4 5)
+          elif [ "$current_min" -ge 11 ] && [ "$current_min" -le 15 ]; then
+            window=1  
+            window_slots=(11 12 13 14 15)
+          elif [ "$current_min" -ge 21 ] && [ "$current_min" -le 25 ]; then
+            window=2
+            window_slots=(21 22 23 24 25)
+          elif [ "$current_min" -ge 31 ] && [ "$current_min" -le 35 ]; then
+            window=3
+            window_slots=(31 32 33 34 35)
+          elif [ "$current_min" -ge 41 ] && [ "$current_min" -le 45 ]; then
+            window=4
+            window_slots=(41 42 43 44 45)
+          elif [ "$current_min" -ge 51 ] && [ "$current_min" -le 55 ]; then
+            window=5
+            window_slots=(51 52 53 54 55)
+          else
+            echo "Not in a valid window, exiting"
+            exit 0
+          fi
           
-          # Create key that changes every 10 minutes
+          # Create key that changes every 10 minutes  
           key="${current_hour}${window}"
           
-          echo "Time key: $key (hour: $current_hour, window: $window)"
+          echo "Time key: $key (hour: $current_hour, window: $window, current_min: $current_min)"
           # Hash the key → first 8 hex chars
           hash=$(echo -n "$key" | sha256sum | cut -c1-8)
           # Convert hex to integer (bash supports 16# notation)
           num=$((16#$hash))
           # Pick index 0..4 (5 possibilities per window)
           idx=$(( num % 5 ))
+          
+          # Get the chosen minute from this window's slots
+          chosen="${window_slots[$idx]}"
 
-          # Map current minute to window base, then add index
-          window_bases=(0 10 20 30 40 50)  # Start of each 10-min window
-          base=${window_bases[$window]}
-          chosen=$(( base + idx + 1 ))  # +1 because windows start at x1, not x0
-
-          echo "Window: $window, Base: $base, Index: $idx"
-          echo "Chosen minute this window: $chosen"
+          echo "Window: $window, Available slots: ${window_slots[*]}"
+          echo "Hash index: $idx, Chosen minute: $chosen"
           echo "Current minute: $current_min"
 
           if [ "$current_min" = "$chosen" ]; then
