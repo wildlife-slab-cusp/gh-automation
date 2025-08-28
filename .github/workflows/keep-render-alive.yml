@@ -1,4 +1,4 @@
-name: Keep Render Alive (stealth mode)
+name: Keep Render Alive (secret header)
 
 on:
   schedule:
@@ -40,6 +40,7 @@ jobs:
                -H "Sec-Fetch-User: ?1" \
                -H "Sec-Fetch-Dest: document" \
                -H "Referer: https://google.com/" \
+               -H "X-Render: select-123" \
                -A "$ua" \
                "$base_url/" -o /dev/null
 
