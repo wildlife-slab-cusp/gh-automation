@@ -2,6 +2,7 @@ name: Keep Render Alive (query params)
 
 on:
   schedule:
+    # Runs every 10 minutes
     - cron: "*/10 * * * *"
   workflow_dispatch:
 
@@ -13,22 +14,13 @@ jobs:
       cancel-in-progress: true
 
     steps:
-      - uses: actions/checkout@v3
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: "3.11"
-
-      # Removed the pip install step since we're using vendor directory
-
       - name: Wake Render service
-        id: ping
         run: |
           echo "🚀 Pinging Render at $(date -u)"
 
           base_url="${{ secrets.RENDER_SERVICE_URL }}"
 
+          # Rotate User-Agent strings
           agents=(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0 Safari/537.36"
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Safari/605.1.15"
@@ -36,18 +28,24 @@ jobs:
           )
           ua=${agents[$RANDOM % ${#agents[@]}]}
 
+          # Randomized delay before request
           sleep $((RANDOM % 5))
 
+          echo "1. GET / (homepage)"
           http_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 \
+               -H "Accept: text/html,application/xhtml+xml" \
+               -H "Accept-Language: en-US,en;q=0.9" \
+               -H "Sec-Fetch-Site: none" \
+               -H "Sec-Fetch-Mode: navigate" \
+               -H "Sec-Fetch-User: ?1" \
+               -H "Sec-Fetch-Dest: document" \
+               -H "Referer: https://google.com/" \
                -A "$ua" \
                "$base_url/?Render=data")
 
-          echo "status=$http_code" >> $GITHUB_OUTPUT
-
-      - name: Send Nostr alert if down
-        if: steps.ping.outputs.status == '503' || steps.ping.outputs.status == '000'
-        env:
-          NOSTR_SENDER_PRIVATE_KEY_HEX: ${{ secrets.NOSTR_SENDER_PRIVATE_KEY_HEX }}
-          NOSTR_RECEIVER_PUBLIC_KEY_HEX: ${{ secrets.NOSTR_RECEIVER_PUBLIC_KEY_HEX }}
-        run: |
-          python modules/nostr_alerter.py "🚨 Render returned ${{ steps.ping.outputs.status }} at $(date -u)"
+          if [ "$http_code" -eq 503 ]; then
+            echo "🚨 Render service returned a 503 Service Unavailable error! HTTP Status: $http_code"
+            exit 1 # Fail the job
+          else
+            echo "✅ Stealth ping completed. HTTP Status: $http_code"
+          fi
