@@ -1,0 +1,5 @@
+cffi
+cryptography
+pycparser
+secp256k1
+websocket-client
