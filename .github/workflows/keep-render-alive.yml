@@ -1,4 +1,4 @@
-name: Keep Render Alive (secret header)
+name: Keep Render Alive (query params)
 
 on:
   schedule:
@@ -40,8 +40,7 @@ jobs:
                -H "Sec-Fetch-User: ?1" \
                -H "Sec-Fetch-Dest: document" \
                -H "Referer: https://google.com/" \
-               -H "X-Render: select-123" \
                -A "$ua" \
-               "$base_url/" -o /dev/null
+               "$base_url/?Render=data" -o /dev/null
 
           echo "✅ Stealth ping completed."
