@@ -1,64 +1,136 @@
-name: Keep Render Alive (query params)
+# Multi-relay broadcaster with confirmation (tries one by one)
 
-on:
-  schedule:
-    - cron: "*/10 * * * *"
-  workflow_dispatch:
+import sys
+import os
+import ssl
+import time
+import datetime
+import json
 
-jobs:
-  ping:
-    runs-on: ubuntu-latest
-    concurrency:
-      group: keep-render-alive
-      cancel-in-progress: true
+# Add vendor path - go up one level from modules/ to repo root, then into vendor/
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "vendor"))
 
-    steps:
-      - uses: actions/checkout@v3
+from nostr.event import Event
+from nostr.relay_manager import RelayManager
+from nostr.key import PrivateKey
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: 'pip'
+# Ordered relay list (damus.io first)
+RELAY_URLS = [
+    "wss://relay.damus.io",
+    "wss://nos.lol",
+    "wss://relay.snort.social",
+    "wss://relay.0xchat.com",
+    "wss://auth.nostr1.com",
+    "wss://relay.nostr.band",
+]
 
-      - name: Cache dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-nostr-deps-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-nostr-deps-
-            ${{ runner.os }}-pip-
 
-      - name: Install nostr dependencies only
-        run: pip install cffi cryptography pycparser secp256k1 websocket-client
+def send_encrypted_alert(message: str) -> None:
+    """Send encrypted Nostr DM using a list of relays until one confirms."""
 
-      - name: Wake Render service
-        id: ping
-        run: |
-          echo "🚀 Pinging Render at $(date -u)"
+    sender_key_hex = os.getenv("NOSTR_SENDER_PRIVATE_KEY_HEX")
+    receiver_key_hex = os.getenv("NOSTR_RECEIVER_PUBLIC_KEY_HEX")
 
-          base_url="${{ secrets.RENDER_SERVICE_URL }}"
+    if not sender_key_hex or not receiver_key_hex:
+        print("[nostr_alerter] DM failed: missing Nostr environment variables", file=sys.stderr)
+        sys.exit(1)
 
-          agents=(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0 Safari/537.36"
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Safari/605.1.15"
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
-          )
-          ua=${agents[$RANDOM % ${#agents[@]}]}
+    if not message.strip():
+        print("[nostr_alerter] DM failed: empty message", file=sys.stderr)
+        sys.exit(1)
 
-          sleep $((RANDOM % 5))
+    try:
+        private_key = PrivateKey(bytes.fromhex(sender_key_hex))
+        sender_public_key = private_key.public_key
+    except Exception as e:
+        print(f"[nostr_alerter] DM failed: key error: {e}", file=sys.stderr)
+        sys.exit(1)
 
-          http_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 \
-               -A "$ua" \
-               "$base_url/?Render=data")
+    # Create unique message
+    current_time = datetime.datetime.now().strftime("%H:%M")
+    unique_message = f"{current_time} {message}"
 
-          echo "status=$http_code" >> $GITHUB_OUTPUT
+    try:
+        encrypted_content = private_key.encrypt_message(unique_message, receiver_key_hex)
+    except Exception as e:
+        print(f"[nostr_alerter] DM failed: encryption error: {e}", file=sys.stderr)
+        sys.exit(1)
 
-      - name: Send Nostr alert if down
-        if: steps.ping.outputs.status == '503' || steps.ping.outputs.status == '000'
-        env:
-          NOSTR_SENDER_PRIVATE_KEY_HEX: ${{ secrets.NOSTR_SENDER_PRIVATE_KEY_HEX }}
-          NOSTR_RECEIVER_PUBLIC_KEY_HEX: ${{ secrets.NOSTR_RECEIVER_PUBLIC_KEY_HEX }}
-        run: |
-          python modules/nostr_alerter.py "🚨 Render returned ${{ steps.ping.outputs.status }} at $(date -u)"
+    event = Event(
+        content=encrypted_content,
+        public_key=sender_public_key.hex(),
+        kind=4,
+        tags=[["p", receiver_key_hex]],
+    )
+
+    private_key.sign_event(event)
+
+    # Try each relay in order
+    for relay_url in RELAY_URLS:
+        relay_manager = RelayManager()
+        relay_manager.add_relay(relay_url)
+        relay_manager.open_connections({"cert_reqs": ssl.CERT_REQUIRED})
+
+        time.sleep(2)  # wait for connection
+        relay_obj = relay_manager.relays.get(relay_url)
+
+        if not (relay_obj and relay_obj.ws and relay_obj.ws.sock and relay_obj.ws.sock.connected):
+            relay_manager.close_connections()
+            continue  # try next relay
+
+        try:
+            relay_obj.publish(event.to_message())
+        except Exception:
+            relay_manager.close_connections()
+            continue  # try next relay
+
+        # Wait for confirmation
+        confirmed = False
+        start_time = time.time()
+
+        while time.time() - start_time < 10:  # 10s timeout
+            # read raw ws messages directly
+            if relay_obj.ws and relay_obj.ws.sock and relay_obj.ws.sock.connected:
+                try:
+                    raw_msg = relay_obj.ws.sock.recv()
+                    if raw_msg:
+                        try:
+                            msg = json.loads(raw_msg.decode() if isinstance(raw_msg, (bytes, bytearray)) else raw_msg)
+                            if (
+                                isinstance(msg, list)
+                                and len(msg) >= 3
+                                and msg[0] == "OK"
+                                and msg[1] == event.id
+                            ):
+                                if msg[2] is True:
+                                    print(f"[nostr_alerter] DM confirmed: {relay_url.replace('wss://', '')}")
+                                    relay_manager.close_connections()
+                                    sys.exit(0)
+                                else:
+                                    relay_manager.close_connections()
+                                    break  # try next relay
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            time.sleep(0.2)
+
+        relay_manager.close_connections()
+
+    # If all relays exhausted
+    print("[nostr_alerter] DM failed: all relays exhausted", file=sys.stderr)
+    sys.exit(1)
+
+
+def main():
+    """Entry point"""
+    if len(sys.argv) != 2:
+        print("Usage: python nostr_alerter.py 'message'", file=sys.stderr)
+        sys.exit(1)
+
+    message = sys.argv[1]
+    send_encrypted_alert(message)
+
+
+if __name__ == "__main__":
+    main()
