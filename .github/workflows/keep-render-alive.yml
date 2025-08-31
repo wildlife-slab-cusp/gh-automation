@@ -8,6 +8,8 @@ on:
 jobs:
   ping:
     runs-on: ubuntu-latest
+    env:
+      TZ: ${{ secrets.TZ }}
     concurrency:
       group: keep-render-alive
       cancel-in-progress: true
@@ -67,4 +69,4 @@ jobs:
           NOSTR_SENDER_PRIVATE_KEY_HEX: ${{ secrets.NOSTR_SENDER_PRIVATE_KEY_HEX }}
           NOSTR_RECEIVER_PUBLIC_KEY_HEX: ${{ secrets.NOSTR_RECEIVER_PUBLIC_KEY_HEX }}
         run: |
-          python modules/nostr_alerter.py "🚨 Render returned ${{ steps.ping.outputs.status }} at $(date -u)"
+          python modules/nostr_alerter.py "🚨 Render returned ${{ steps.ping.outputs.status }} at $(date)"
