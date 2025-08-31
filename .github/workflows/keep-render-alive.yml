@@ -62,7 +62,7 @@ jobs:
           echo "status=$http_code" >> $GITHUB_OUTPUT
 
       - name: Send Nostr alert if down
-        if: steps.ping.outputs.status == '503' || steps.ping.outputs.status == '000'
+        if: steps.ping.outputs.status != '200'
         env:
           NOSTR_SENDER_PRIVATE_KEY_HEX: ${{ secrets.NOSTR_SENDER_PRIVATE_KEY_HEX }}
           NOSTR_RECEIVER_PUBLIC_KEY_HEX: ${{ secrets.NOSTR_RECEIVER_PUBLIC_KEY_HEX }}
